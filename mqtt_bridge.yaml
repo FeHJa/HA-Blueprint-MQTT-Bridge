@@ -1,0 +1,197 @@
+blueprint:
+  name: MQTT Entity Bridge with Shared Discovery Federation
+  description: >
+    Publishes selected entities with MQTT Discovery to a shared prefix (for cross-HA federation),
+    and listens to discovery configs on that shared prefix, forwarding them to your local discovery topic.
+    This allows multiple Home Assistant installations to automatically share and discover entities.
+  author: Felix & Mistral
+  domain: automation
+  input:
+    entities:
+      name: Entities to bridge
+      description: "Select all entities (sensor, binary_sensor, input_boolean, etc.) you want to publish."
+      selector:
+        entity:
+          multiple: true
+    shared_discovery_prefix:
+      name: Shared Discovery Prefix
+      description: "The shared prefix for MQTT discovery configs, e.g., 'share/homeassistant/'. Unfortunately this is hardcoded for the time being."
+      default: "share/homeassistant/"
+      selector:
+        text:
+    local_discovery_prefix:
+      name: Local Discovery Prefix
+      description: "Usually 'homeassistant'."
+      default: "homeassistant"
+      selector:
+        text:
+    sensor_value_prefix:
+      name: Sensor Value Prefix
+      description: "The prefix for MQTT sensor values, e.g., 'share/jakob/'."
+      default: "share/jakob/"
+      selector:
+        text:
+    time_pattern:
+      name: Time pattern
+      description: "Specify how often the topics should be updated, e.g., every minute ('/1')."
+      default: "/1"
+      selector:
+        text:
+    bridge_name:
+      name: Bridge Name
+      description: "Name for the device in discovery configs."
+      default: "Bridge Jakob"
+      selector:
+        text:
+trigger:
+  - platform: state
+    entity_id: !input entities
+  - platform: time_pattern
+    minutes: !input time_pattern
+  - platform: mqtt
+    topic: "share/homeassistant/+/+/config"
+variables:
+  shared_discovery_prefix: !input shared_discovery_prefix
+  local_discovery_prefix: !input local_discovery_prefix
+  sensor_value_prefix: !input sensor_value_prefix
+  entities: !input entities
+  bridge_name: !input bridge_name
+  slug_bridge_name: "{{ bridge_name | lower | replace(' ', '_') | regex_replace('[^a-z0-9_]', '') }}"
+  random_delay: "{{ range(0, 10) | random }}"
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.platform in ['time_pattern', 'state'] }}"
+        sequence:
+          - delay: "{{ '00:00:' ~ random_delay }}"
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.platform == 'time_pattern' }}"
+                sequence:
+                  - repeat:
+                      for_each: "{{ entities }}"
+                      sequence:
+                        - variables:
+                            device_class: >
+                              {% if state_attr(repeat.item, 'device_class') is defined %}
+                                {{ state_attr(repeat.item, 'device_class') }}
+                              {% else %}
+                                {% if 'temperature' in repeat.item %}
+                                  temperature
+                                {% elif 'humidity' in repeat.item %}
+                                  humidity
+                                {% else %}
+                                  None
+                                {% endif %}
+                              {% endif %}
+                            unit_of_measurement: >
+                              {% if state_attr(repeat.item, 'unit_of_measurement') is defined %}
+                                {{ state_attr(repeat.item, 'unit_of_measurement') }}
+                              {% else %}
+                                {% if 'temperature' in repeat.item %}
+                                  °C
+                                {% elif 'humidity' in repeat.item %}
+                                  %
+                                {% else %}
+                                  None
+                                {% endif %}
+                              {% endif %}
+                        - service: mqtt.publish
+                          data:
+                            topic: "{{ shared_discovery_prefix }}sensor/{{ repeat.item.split('.')[-1] }}/config"
+                            payload: >-
+                              {
+                                "name": "{{ state_attr(repeat.item, 'friendly_name') | default(repeat.item.split('.')[-1].replace('_', ' ').title(), true) }}",
+                                "state_topic": "{{ sensor_value_prefix }}sensor/{{ repeat.item.split('.')[-1] }}",
+                                "unique_id": "{{ repeat.item }}",
+                                {% if device_class != 'None' %}
+                                "device_class": "{{ device_class }}",
+                                {% endif %}
+                                {% if unit_of_measurement != 'None' %}
+                                "unit_of_measurement": "{{ unit_of_measurement }}",
+                                {% endif %}
+                                "device": {
+                                  "identifiers": ["{{ slug_bridge_name }}"],
+                                  "name": "{{ bridge_name }}",
+                                  "sw_version": "1.0.1"
+                                }
+                              }
+                        - service: mqtt.publish
+                          data:
+                            topic: "{{ sensor_value_prefix }}sensor/{{ repeat.item.split('.')[-1] }}"
+                            payload: "{{ states(repeat.item) }}"
+            default:
+              - variables:
+                  device_class: >
+                    {% if state_attr(trigger.entity_id, 'device_class') is defined %}
+                      {{ state_attr(trigger.entity_id, 'device_class') }}
+                    {% else %}
+                      {% if 'temperature' in trigger.entity_id %}
+                        temperature
+                      {% elif 'humidity' in trigger.entity_id %}
+                        humidity
+                      {% else %}
+                        None
+                      {% endif %}
+                    {% endif %}
+                  unit_of_measurement: >
+                    {% if state_attr(trigger.entity_id, 'unit_of_measurement') is defined %}
+                      {{ state_attr(trigger.entity_id, 'unit_of_measurement') }}
+                    {% else %}
+                      {% if 'temperature' in trigger.entity_id %}
+                        °C
+                      {% elif 'humidity' in trigger.entity_id %}
+                        %
+                      {% else %}
+                        None
+                      {% endif %}
+                    {% endif %}
+              - service: mqtt.publish
+                data:
+                  topic: "{{ shared_discovery_prefix }}sensor/{{ trigger.entity_id.split('.')[-1] }}/config"
+                  payload: >-
+                    {
+                      "name": "{{ state_attr(trigger.entity_id, 'friendly_name') | default(trigger.entity_id.split('.')[-1].replace('_', ' ').title(), true) }}",
+                      "state_topic": "{{ sensor_value_prefix }}sensor/{{ trigger.entity_id.split('.')[-1] }}",
+                      "unique_id": "{{ trigger.entity_id }}",
+                      {% if device_class != 'None' %}
+                      "device_class": "{{ device_class }}",
+                      {% endif %}
+                      {% if unit_of_measurement != 'None' %}
+                      "unit_of_measurement": "{{ unit_of_measurement }}",
+                      {% endif %}
+                      "device": {
+                        "identifiers": ["{{ slug_bridge_name }}"],
+                        "name": "{{ bridge_name }}",
+                        "sw_version": "1.0.1"
+                      }
+                    }
+              - service: mqtt.publish
+                data:
+                  topic: "{{ sensor_value_prefix }}sensor/{{ trigger.entity_id.split('.')[-1] }}"
+                  payload: "{{ trigger.to_state.state }}"
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ trigger.platform == 'mqtt'
+                 and trigger.topic.endswith('/config')
+                 and trigger.topic.startswith(shared_discovery_prefix) }}
+        sequence:
+          - variables:
+              topic_parts: "{{ trigger.topic.split('/') }}"
+              prefix_len: "{{ shared_discovery_prefix.split('/') | select('ne', '') | list | length }}"
+              component: "{{ topic_parts[prefix_len] if topic_parts|length > prefix_len else '' }}"
+              object_id: "{{ topic_parts[prefix_len+1] if topic_parts|length > prefix_len+1 else '' }}"
+              config_marker: "{{ topic_parts[prefix_len+2] if topic_parts|length > prefix_len+2 else '' }}"
+              forward_topic: "{{ local_discovery_prefix }}/{{ component }}/{{ object_id }}/config"
+              payload_dict: "{{ trigger.payload | from_json }}"
+          - condition: template
+            value_template: "{{ component and object_id and config_marker == 'config' and payload_dict.unique_id not in entities }}"
+          - service: mqtt.publish
+            data:
+              topic: "{{ forward_topic }}"
+              payload: "{{ trigger.payload }}"
+mode: parallel
+max: 30
