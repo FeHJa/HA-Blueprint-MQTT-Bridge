@@ -130,6 +130,7 @@ action:
                                 "unique_id": "{{ slug_bridge_name }}::{{ repeat.item }}"{% if device_class != '__none__' %},
                                 "device_class": "{{ device_class }}"{% endif %}{% if unit_of_measurement != '__none__' %},
                                 "unit_of_measurement": "{{ unit_of_measurement }}"{% endif %},
+                                "bridge_id": "{{ slug_bridge_name }}",
                                 "device": {
                                   "identifiers": ["{{ slug_bridge_name }}"],
                                   "name": "{{ bridge_name }}",
@@ -186,6 +187,7 @@ action:
                       "unique_id": "{{ slug_bridge_name }}::{{ trigger.entity_id }}"{% if device_class != '__none__' %},
                       "device_class": "{{ device_class }}"{% endif %}{% if unit_of_measurement != '__none__' %},
                       "unit_of_measurement": "{{ unit_of_measurement }}"{% endif %},
+                      "bridge_id": "{{ slug_bridge_name }}",
                       "device": {
                         "identifiers": ["{{ slug_bridge_name }}"],
                         "name": "{{ bridge_name }}",
@@ -214,8 +216,18 @@ action:
               config_marker: "{{ topic_parts[prefix_len+2] if topic_parts|length > prefix_len+2 else '' }}"
               forward_topic: "{{ local_prefix_norm }}/{{ component }}/{{ object_id }}/config"
               payload_len: "{{ trigger.payload | length }}"
+              payload_dict: "{{ trigger.payload | from_json if trigger.payload | length > 0 else {} }}"
+              uid: "{{ (payload_dict.unique_id | default('')) | string }}"
+              is_own: >-
+                {{ payload_dict.bridge_id | default('') == slug_bridge_name
+                   or uid.startswith(slug_bridge_name ~ '::')
+                   or uid.startswith(slug_bridge_name ~ '.') }}
           - condition: template
-            value_template: "{{ component and object_id and config_marker == 'config' }}"
+            value_template: >
+              {{ (component | length > 0)
+                 and (object_id | length > 0)
+                 and (config_marker == 'config')
+                 and (not is_own) }}
           - service: mqtt.publish
             data:
               topic: "{{ forward_topic }}"
